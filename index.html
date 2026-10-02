@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#eef2ff">
+<link rel="icon" href="https://avatars.githubusercontent.com/u/220566987?v=4&s=100" type="image/png">
+<title>图床 - Fuhao574</title>
+<!-- theme.css?v= 里的数字要跟 theme.css 的修改时间一致。
+     index.php 用 filemtime(THEME_CSS) 自动生成这个参数，但这个页面是纯静态的、
+     不能跑 PHP，所以只能手填。改完 theme.css 记得回头把这个数字换成
+     filemtime(theme.css) 的值（DeployCache 会在测试里检查有没有漏）。 -->
+<link rel="stylesheet" href="theme.css?v=1790962165">
+<style>
+  /* 这一页是纯静态登录页，只用 theme.css 里已有的类。
+     这里只补两处：让登录卡在页面上垂直居中，以及错误提示的淡入。 */
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .login-card { width: 100%; }
+  /* 取景框角标：主站的 LoginCard 也挂着同一套（personal-site/src/components/LoginCard.tsx:213）。
+     theme.css 里 .card / .fm 已经带了，这里给登录卡补一份 —— 三个页面语言才统一。 */
+  .login-card { position: relative; }
+  .login-card::before, .login-card::after {
+    content: '';
+    position: absolute;
+    width: 12px; height: 12px;
+    border: 2px solid var(--accent);
+    opacity: .85;
+    pointer-events: none;
+    transition: width .3s var(--ease), height .3s var(--ease), opacity .3s var(--ease);
+  }
+  .login-card::before { top: 7px; left: 7px; border-right: none; border-bottom: none; border-radius: 5px 0 0 0; }
+  .login-card::after  { bottom: 7px; right: 7px; border-left: none; border-top: none; border-radius: 0 0 5px 0; }
+  .login-card:hover::before, .login-card:hover::after { width: 15px; height: 15px; opacity: 1; }
+  .pw-msg {
+    margin: 14px 0 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--sig-red);
+    min-height: 1.2em;
+    animation: pwFade .3s var(--ease);
+  }
+  .pw-msg.ok { color: #0f766e; }
+  /* 锁定状态：比「口令不对」更重，用琥珀色而不是红色 ——
+     红色暗示「你做错了什么」，但被锁不是用户的错。 */
+  .pw-msg.locked { color: #b45309; }
+  /* 首次部署：这不是错误也不是警告，是「你还有一步没做完」。
+     用靛蓝（跟主色一族），别用红/琥珀 —— 那两个都表示出错了。 */
+  .pw-msg.firstrun { color: var(--accent-hover); font-size: 12.5px; line-height: 1.75; text-align: left; }
+  @keyframes pwFade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  button.btn { width: 100%; }
+  button.btn:disabled { transform: none; }
+</style>
+</head>
+<body>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-brand">
+      <img src="https://avatars.githubusercontent.com/u/220566987?v=4&s=100" alt="Fuhao574" width="52" height="52">
+    </div>
+    <h1 class="login-headline">Fuhao574的图床</h1>
+    <p class="login-sub">需要口令才能进入</p>
+
+    <form id="pw" autocomplete="off">
+      <label for="pwIn">口令</label>
+      <input id="pwIn" name="password" type="password" placeholder="请输入口令"
+             autocomplete="current-password" autofocus required>
+      <button class="btn" id="pwGo" type="submit">进入</button>
+      <p class="pw-msg" id="pwMsg"></p>
+    </form>
+  </div>
+  <p class="login-foot">Fuhao574 · 这个世界不缺大人</p>
+</div>
+
+<script>
+/**
+ * 这个文件是纯静态的，不含任何口令材料。它只做两件事：
+ *   1. 提交时把口令 POST 给 index.php?do=login&ajax=1（比对发生在服务端）
+ *   2. 进页面先问一次 index.php?do=whoami —— 已经登录过就直接进图床，
+ *      省得让用户明明还有效 cookie 却又要输一遍口令。
+ *
+ * 口令哈希与 cookie 签名密钥只存在于 private/secret.php，浏览器永远拿不到。
+ */
+(async function () {
+  const form  = document.getElementById('pw');
+  const input = document.getElementById('pwIn');
+  const go    = document.getElementById('pwGo');
+  const msg   = document.getElementById('pwMsg');
+
+  /* ==========================================================
+     服务器反爬的处理
+     --------------------------------------------------------------
+     这台免费主机自带反爬：命中规则时它返回一段 200 的 HTML，里面引一个
+     aes.js，脚本算出 cookie 再 location.href 跳走。
+
+     浏览器只在**顶层导航**时执行响应里的脚本 —— fetch() 拿到的那段 HTML
+     永远只是文本。所以：
+       - 页面刚打开时（导航）浏览器能过验证、拿到 cookie，之后的 fetch 正常
+       - 验证在页面打开期间轮换掉时，fetch 就拿到 HTML 而不是 JSON，报一句
+         用户完全看不懂的 Unexpected token '<'，而且**重试也没用** ——
+         挑战脚本跳转用的是 GET，POST 的请求体已经丢了
+
+     反爬规则是服务器自带的、改不了，所以只能做两件事：提前发现、说人话。
+     ========================================================== */
+
+  function looksBlocked(text) {
+    return typeof text === 'string'
+      && text.length < 40000
+      && /<script/i.test(text)
+      && /aes\.js|document\.cookie|location\.href/i.test(text);
+  }
+
+  const BLOCKED_HINT =
+    '服务器的反爬正在验证这个浏览器，页内提交会被它拦下。'
+    + '点下面的按钮刷新一次，让浏览器过验证，然后就能正常登录。';
+
+  function showBlocked() {
+    clearLock();
+    msg.className = 'pw-msg locked';
+    msg.textContent = BLOCKED_HINT;
+    go.disabled = false;
+    go.textContent = '刷新页面重试';
+    // 把按钮直接变成「刷新」，省得用户自己猜要点哪里
+    go.onclick = function (ev) { ev.preventDefault(); location.reload(); };
+  }
+
+  /* ==========================================================
+     首次部署提示
+     --------------------------------------------------------------
+     服务端刚生成过一个随机口令，界面上要**逼主人改掉**它。
+     但初始口令本身不在这儿显示 —— 这一页是站点正门，走 / 进来的人
+     都能看见，所以只说「去哪儿取」：
+
+         口令在 index.php 这一页上（要手动访问才看得到）
+
+     为什么不放这儿：正门 = 公开。主人部署完到改掉之间有个窗口，
+     窗口里任何访客拿到这个口令就能进来看图、删图。缩到「必须特意
+     访问 /index.php」之后，这个窗口才小到可以接受。
+     ========================================================== */
+  function showFirstRun() {
+    msg.className = 'pw-msg firstrun';
+    msg.textContent =
+      '这是首次部署，初始口令在 index.php 那一页上（要手动访问才看得到）。'
+      + '拿到之后先进来，右下角「改口令」立刻改掉 —— 在改掉之前图床只允许改口令这一个操作。';
+  }
+
+  /* ==========================================================
+     锁定倒计时
+     --------------------------------------------------------------
+     服务端锁定期间会返回 { locked:true, retryAfter:N }。
+     这里起一个每秒的计时把按钮按住。不然用户会对着一个注定失败的按钮
+     连点 —— 每次点击都是一次注定被拒的请求，纯属自己骗自己。
+
+     页面刚打开时也问一次状态：锁定可能是上一个标签页试出来的，
+     不问的话得填完口令点进去才被告知「等 15 分钟」。
+     ========================================================== */
+  let lockTimer = null;
+
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+  function fmtRemain(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return m > 0 ? m + ' 分 ' + pad2(s) + ' 秒' : s + ' 秒';
+  }
+
+  function clearLock() {
+    if (lockTimer) { clearInterval(lockTimer); lockTimer = null; }
+    go.disabled = false;
+    input.disabled = false;
+    go.onclick = null;
+  }
+
+  function startLockCountdown(seconds) {
+    let left = Math.max(1, Math.floor(seconds));
+    clearLock();
+    const tick = function () {
+      go.disabled = true;
+      input.disabled = true;
+      go.textContent = '锁定 ' + fmtRemain(left);
+      msg.className = 'pw-msg locked';
+      msg.textContent = '尝试次数过多，暂时不给试。';
+      left--;
+      if (left <= 0) {
+        clearLock();
+        go.textContent = '进入';
+        input.focus();
+      }
+    };
+    tick();
+    lockTimer = setInterval(tick, 1000);
+  }
+
+  // 打开页面先问一次锁定状态。
+  // 顺带这一步还能提前发现反爬拦截 —— 拿不到 JSON 就说明正在被挑战，
+  // 那会儿用户还没输口令，直接提示刷新比等他提交失败要好。
+  try {
+    const r = await fetch('index.php?do=guardstatus', { credentials: 'same-origin' });
+    const t = await r.text();
+    if (looksBlocked(t)) {
+      showBlocked();
+    } else {
+      const j = JSON.parse(t);
+      if (j && j.ok && j.locked) startLockCountdown(j.retryAfter);
+      if (j && j.ok && j.mustChange) showFirstRun();
+    }
+  } catch (e) {
+    // 网络错误问不到状态，表单照常可用
+  }
+
+  // 已登录就直接进图床。这一步失败无所谓（网络问题），下面照常显示表单。
+  try {
+    const r = await fetch('index.php?do=whoami', { credentials: 'same-origin' });
+    const t = await r.text();
+    if (looksBlocked(t)) {
+      showBlocked();          // 别被下面的 catch 吞掉 —— 那会让用户误以为没登录
+    } else {
+      const j = JSON.parse(t);
+      if (j && j.ok && j.authed) {
+        location.replace('index.php');
+        return;
+      }
+    }
+  } catch (e) {
+    // 探测失败就当没登录，不打扰用户
+  }
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (lockTimer) return;              // 锁着就别发了
+    go.disabled = true;
+    go.textContent = '验证中…';
+    msg.textContent = '';
+    msg.className = 'pw-msg';
+
+    try {
+      const fd = new FormData();
+      fd.append('password', input.value);
+      const r = await fetch('index.php?do=login&ajax=1', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
+      // 先看是不是反爬挑战页，再解析 JSON。
+      // 顺序不能反：直接 r.json() 抛出来的是
+      //   Unexpected token '<', "<html><bo..." is not valid JSON
+      // 用户看不出发生了什么，只会以为口令错了然后反复试 ——
+      // 而反复重试对被挑战的 POST 毫无用处（请求体已经丢了）。
+      const t = await r.text();
+      if (looksBlocked(t)) { showBlocked(); return; }
+      const j = JSON.parse(t);
+
+      if (!j.ok) {
+        if (j.locked) {
+          startLockCountdown(j.retryAfter || 60);
+          return;
+        }
+        msg.textContent = j.error || '失败';
+        // 「再错一次要等 N 秒」提前说，别让人白等
+        if (j.nextWait) {
+          msg.textContent += '（再错一次要等 ' + fmtRemain(j.nextWait) + '）';
+        }
+        go.disabled = false;
+        go.textContent = '进入';
+        input.select();
+        return;
+      }
+      // 服务端已下发 cookie，这儿只需要跳进图床
+      msg.className = 'pw-msg ok';
+      msg.textContent = '通过，正在进入…';
+      go.textContent = '进入中…';
+      location.href = j.redirect || 'index.php';
+    } catch (e) {
+      msg.textContent = '网络错误：' + e.message;
+      go.disabled = false;
+      go.textContent = '进入';
+    }
+  });
+})();
+</script>
+</body>
+</html>

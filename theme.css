@@ -1,0 +1,743 @@
+/* ============================================================
+   theme.css — 与个人站（fuhao574.cyou）共用的设计 token
+   ============================================================
+   这份值是从 personal-site/src/styles/theme.ts 与 global.css 里抄过来的，
+   改这里之前先确认那边是否也改了，两边要保持一致：
+
+     bgPrimary      #F5F7FA     页面底
+     bgSecondary    #FFFFFF     卡片底
+     bgTertiary     #EDF1F7     次级面
+     textPrimary    #0e1116
+     textSecondary  #5b6472
+     textTertiary   #5C6370     WCAG AA，比 #9CA3AF 深
+     line           #dfe4f2     卡壳描边
+     accent         #4f46e5     唯一主强调
+     sigRed         #b8342c
+     卡片 18px 圆角 + #dfe4f2 + 双层阴影（theme.card）
+     输入框 14px 圆角（theme.borderRadius.field）
+     主按钮 indigo 渐变 + 同色辉光（theme.button）
+     字体 Inter / Noto Sans SC（theme.fonts.ui）
+   ============================================================ */
+
+:root {
+  --bg-primary:   #f5f7fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary:  #edf1f7;
+
+  --text-primary:   #0e1116;
+  --text-secondary: #5b6472;
+  --text-tertiary:  #5c6370;
+
+  --line:   #dfe4f2;
+  --accent: #4f46e5;
+
+  --accent-hover: #4338ca;
+  --accent-wash:  #eef2ff;
+  --sig-red: #b8342c;
+
+  --radius-sm:   8px;
+  --radius-media: 10px;
+  --radius-field: 14px;
+  --radius-card:  18px;
+  --radius-full:  9999px;
+
+  --shadow-card:  0 1px 1px rgba(14, 17, 22, 0.04), 0 20px 40px -24px rgba(14, 17, 22, 0.18);
+  --shadow-card-hover: 0 2px 2px rgba(14, 17, 22, 0.06), 0 28px 48px -24px rgba(14, 17, 22, 0.22);
+  --shadow-light: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-medium: 0 4px 20px rgba(0, 0, 0, 0.06);
+
+  --btn-gradient: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  --btn-glow:     0 2px 8px rgba(99, 102, 241, 0.30);
+  --btn-glow-hover: 0 4px 12px rgba(99, 102, 241, 0.36);
+
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1.0);
+
+  --font-ui: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont,
+             'PingFang SC', 'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 与主站 global.css 同一套渐变底 */
+  background-color: #eef2ff;
+  background-image: linear-gradient(
+    135deg,
+    #eef2ff 0%,
+    #f5f7fa 30%,
+    #f5f3ff 60%,
+    #eef2ff 100%
+  );
+  background-size: 200% 200%;
+  background-attachment: fixed;
+}
+
+body {
+  margin: 0;
+  padding: 32px 20px 90px;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+code { font-family: var(--font-mono); color: var(--accent-hover); }
+
+::selection { background: rgba(99, 102, 241, 0.2); }
+
+.wrap { max-width: 1040px; margin: 0 auto; }
+
+h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin: 0 0 4px; }
+h2 { font-size: 17px; font-weight: 700; margin: 0; }
+
+.sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+.meta { color: var(--text-tertiary); font-size: 12.5px; }
+
+/* ============================================================
+   取景框角标（主站的「对角折线」）
+   ============================================================
+   抄自 personal-site/src/components/Card.tsx 的 cardSkin()，
+   那边是全站 12 处共用的规范版（注释原文：「:before/:after 用作取景框角标」）。
+
+   做法：一个 12×12px 的方块，四条边全画上，再把其中两条设成 none ——
+   剩下的两条边自动组成一个 L 形直角折线。不用 SVG、不用 clip-path。
+   钉在左上（::before）和右下（::after）两个**对角**位置，所以叫对角折线。
+   悬停时从 12px 放大到 15px，主站注释说这是「呈现锁定感」（像对焦锁定）。
+
+   两个必须遵守的前提（踩过会静默失效）：
+     1. 宿主元素要有 position: relative，否则伪元素会跑到更外层的定位祖先上
+     2. 宿主元素**不能是滚动容器**（overflow: auto/scroll）——
+        否则角标会跟着内容一起滚走。ProfileCenter.tsx:148 专门记了这个坑。
+        所以 .fm-side / .fm-content 这两个滚动区不挂角标，挂在 .fm 外框上。
+   ============================================================ */
+.card,
+.fm {
+  position: relative;
+}
+.card::before,
+.card::after,
+.fm::before,
+.fm::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent);
+  opacity: .85;
+  pointer-events: none;
+  transition: width .3s var(--ease), height .3s var(--ease), opacity .3s var(--ease);
+}
+/* 左上：留上边和左边 */
+.card::before,
+.fm::before {
+  top: 7px;
+  left: 7px;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 5px 0 0 0;
+}
+/* 右下：留下边和右边。
+   四个角的圆角值必须逐个写全 —— 少写一个，另外两个角会被连带圆掉。 */
+.card::after,
+.fm::after {
+  bottom: 7px;
+  right: 7px;
+  border-left: none;
+  border-top: none;
+  border-radius: 0 0 5px 0;
+}
+.card:hover::before,
+.card:hover::after,
+.fm:hover::before,
+.fm:hover::after {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+
+/* ---------- 卡片 ---------- */
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 22px 24px 18px;
+  margin-top: 16px;
+  transition: box-shadow .3s var(--ease), border-color .3s var(--ease);
+}
+.card:hover { border-color: rgba(79, 70, 229, .33); }
+.card.bad { border-color: rgba(184, 52, 44, .4); background: #fdf5f4; }
+/* 出错的卡改成红色角标，跟边框一个色系 */
+.card.bad::before, .card.bad::after { border-color: var(--sig-red); }
+
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+label { display: block; font-size: 12.5px; color: var(--text-secondary); margin: 0 0 5px; }
+
+/* ---------- 输入框：抄 LoginCard 的 TextInput ---------- */
+input, select {
+  width: 100%;
+  padding: 11px 15px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: #f9fafb;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-field);
+  outline: none;
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+input::placeholder, select::placeholder {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+input:focus, select:focus {
+  background: #ffffff;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+input:disabled, select:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+/* ---------- 按钮：抄 theme.button ---------- */
+button.btn {
+  padding: 13px 22px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #ffffff;
+  background: var(--btn-gradient);
+  border-radius: var(--radius-field);
+  box-shadow: var(--btn-glow);
+  transition: transform .3s var(--ease), box-shadow .3s var(--ease), opacity .25s ease;
+}
+button.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--btn-glow-hover);
+}
+button.btn:disabled {
+  background: #f3f4f6;
+  color: var(--text-tertiary);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background-color .15s ease, color .15s ease;
+}
+button.ghost:hover { background: var(--accent-wash); color: var(--accent); text-decoration: none; }
+
+button.danger { color: var(--sig-red); }
+button.danger:hover { background: #fdf0ef; color: var(--sig-red); }
+
+/* ---------- 拖放区 ---------- */
+#drop {
+  border: 2px dashed var(--line);
+  border-radius: var(--radius-card);
+  padding: 44px 20px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--bg-primary);
+  transition: border-color .2s ease, background-color .2s ease;
+}
+#drop:hover, #drop.hot { border-color: var(--accent); background: var(--accent-wash); }
+#drop .big { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
+#drop .hint { color: var(--text-tertiary); font-size: 13px; }
+input[type=file] { display: none; }
+
+/* ---------- 待传列表 ---------- */
+.file {
+  display: grid;
+  grid-template-columns: 1fr 190px 190px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+}
+.file .nm { font-size: 13px; word-break: break-all; }
+.file .sz { color: var(--text-tertiary); font-size: 12px; }
+.file input { padding: 7px 10px; font-size: 13px; font-weight: 500; }
+
+/* ---------- 进度条 ---------- */
+#bar { display: none; margin-top: 18px; }
+#bar.on { display: block; }
+.bar-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 7px;
+  gap: 12px;
+}
+.bar-top .meta:first-child { overflow-wrap: anywhere; }
+#barPct { font-variant-numeric: tabular-nums; flex-shrink: 0; font-weight: 700; color: var(--text-secondary); }
+.bar-track {
+  height: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--radius-full);
+  background: var(--btn-gradient);
+  transition: width .18s linear;
+}
+#bar.done .bar-fill { background: #2f9e63; }
+#bar.bad .bar-fill  { background: var(--sig-red); }
+
+/* ---------- 角标 ----------
+   原来这里还有 .tag / .tag.cover。它们只出现在「上传成功结果卡」的标题行
+   （<span class="tag">封面</span> 之类），卡片去掉之后没有别的产出点，
+   一起删了。真的需要角标时（比如文件夹行里的封面标记）再加回来。 */
+
+/* ---------- 结果区 ----------
+   这里原本还有 .result-preview（上传成功后那张原尺寸预览图）。
+   成功的卡片整个去掉了 —— 一轮十几张就是十几屏预览，把图库顶没了，
+   而 URL / frontmatter 在图库里右键就能复制。剩下的 .err 给
+   「失败列表」用（showFailures）。 */
+.err { color: var(--sig-red); font-size: 13px; }
+
+.url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 6px 0;
+  word-break: break-all;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease;
+}
+.url:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ============================================================
+   图库 —— Windows 文件管理器样式
+   ============================================================
+   结构照搬资源管理器的三段式：
+     .fm          外框
+     .fm-bar      顶部工具条（面包屑 + 视图切换）
+     .fm-main     主体（左侧树 + 右侧内容区）
+     .fm-status   底部状态栏
+   交互约定：
+     - 左侧树选文件夹 = 过滤；点「所有图片」看全部
+     - 大图标 / 详情列表 两套视图，选择记在 localStorage
+     - 单击选中，Ctrl+单击多选，点空白处取消
+     - 选中时状态栏直接给出可点击复制的 URL
+     - 右键出菜单
+   ============================================================ */
+
+.fm {
+  margin-top: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-media);
+  box-shadow: var(--shadow-light);
+  overflow: hidden;
+}
+
+.fm-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.fm-crumb { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 170px; font-size: 13.5px; overflow: hidden; }
+.fm-crumb button {
+  padding: 4px 9px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color .12s ease, color .12s ease;
+}
+.fm-crumb button:hover { background: var(--accent-wash); color: var(--accent); text-decoration: none; }
+.fm-crumb .sep { color: var(--text-tertiary); flex-shrink: 0; }
+.fm-crumb .cur { color: var(--text-primary); font-weight: 700; padding: 4px 6px; }
+
+.fm-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.fm-views { display: flex; background: var(--bg-tertiary); border-radius: 7px; padding: 2px; gap: 2px; }
+.fm-views button {
+  padding: 5px 11px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: background-color .12s ease, color .12s ease, box-shadow .12s ease;
+}
+.fm-views button:hover { text-decoration: none; }
+.fm-views button[aria-pressed=true] { background: var(--bg-secondary); color: var(--accent); box-shadow: var(--shadow-light); }
+
+/* ---------- 选中操作条 ----------
+   一有选中就整条冒出来，放在面包屑下面。做成「常驻的一行」而不是
+   塞进 .fm-tools 里，是因为工具栏右侧已经挤了视图切换 + 新建 + 刷新，
+   再塞四个按钮会挤成两行，反而更难认。
+   「全选」是这行的重点 —— 有了它，「批量删图」不需要先 Ctrl 点一堆再按 Delete。 */
+.fm-sel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--accent-wash);
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.fm-sel[hidden] { display: none; }
+.fm-sel-n { font-weight: 700; color: var(--accent); margin-right: 2px; }
+.fm-sel .ghost, .fm-sel .danger { padding: 5px 12px; font-size: 13px; }
+.fm-sel .danger { color: var(--sig-red); border-color: rgba(190, 42, 62, .3); }
+.fm-sel .danger:hover { background: var(--sig-red); border-color: var(--sig-red); color: #fff; }
+.fm-sel-tip {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* align-items: stretch 是默认的，但 fm-content 有 max-height 会让两栏不等高。
+   显式写出来，并把 max-height 去掉，改由两栏共享同一个高度。 */
+.fm-main { display: grid; grid-template-columns: 228px 1fr; align-items: stretch; min-height: 400px; }
+
+.fm-side {
+  border-right: 1px solid var(--line);
+  background: var(--bg-primary);
+  padding: 8px 6px 14px;
+  /* 高度跟着内容区走（grid 默认 stretch），文件夹多时内部滚动。
+     之前两侧各设 max-height: 620px，结果窄屏下侧栏先到顶、
+     看起来像「只显示了两个文件夹」，其实是内容被滚动容器吃掉了。 */
+  overflow-y: auto;
+}
+.fm-side h4 {
+  margin: 10px 8px 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--text-tertiary);
+}
+.fm-side button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background-color .12s ease, color .12s ease;
+}
+.fm-side button:hover { background: rgba(79, 70, 229, .07); color: var(--text-primary); text-decoration: none; }
+.fm-side button[aria-current=true] { background: var(--accent-wash); color: var(--accent-hover); font-weight: 700; }
+.fm-side .ic { width: 17px; height: 17px; flex-shrink: 0; opacity: .85; }
+.fm-side .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.fm-side .ct { font-size: 11px; color: var(--text-tertiary); flex-shrink: 0; }
+
+.fm-content { padding: 12px 14px 16px; overflow-y: auto; min-width: 0; }
+.fm-empty { padding: 44px 20px; text-align: center; color: var(--text-tertiary); font-size: 13.5px; }
+
+.fm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap: 6px; }
+.fm-item {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 6px 7px;
+  text-align: center;
+  transition: background-color .1s ease, border-color .1s ease;
+}
+.fm-item:hover { background: var(--bg-primary); border-color: var(--line); }
+.fm-item[aria-selected=true] { background: var(--accent-wash); border-color: rgba(79, 70, 229, .5); }
+.fm-item .thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg-tertiary);
+  display: block;
+  cursor: pointer;
+}
+.fm-item .nm {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 尺寸和「封面」标记同一行：标记另起一行会让每格高度不一致，
+   网格看起来像参差不齐的补丁。flex 排在一行里，格高就统一了。 */
+.fm-item .sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-height: 16px;
+}
+.fm-item .badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-wash);
+  color: var(--accent-hover);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+.fm-list { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fm-list th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--line);
+  padding: 7px 9px;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  z-index: 1;
+}
+.fm-list th:hover { color: var(--accent); }
+.fm-list td { padding: 7px 9px; border-bottom: 1px solid var(--bg-tertiary); color: var(--text-secondary); white-space: nowrap; }
+.fm-list tbody tr:hover td { background: var(--bg-primary); }
+.fm-list tbody tr[aria-selected=true] td { background: var(--accent-wash); color: var(--text-primary); }
+.fm-list .c-name { display: flex; align-items: center; gap: 9px; }
+.fm-list .c-name img { width: 30px; height: 22px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg-tertiary); }
+.fm-list .c-name span { overflow: hidden; text-overflow: ellipsis; }
+.fm-list .c-num { text-align: right; font-variant-numeric: tabular-nums; }
+.fm-list .c-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-tertiary); }
+
+.fm-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 12px;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-height: 34px;
+}
+.fm-status .url {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  font-size: 11.5px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.fm-status .url:hover { text-decoration: underline; }
+
+.fm-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 218px;
+  padding: 5px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card-hover);
+  display: none;
+}
+.fm-menu.on { display: block; }
+.fm-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.fm-menu button:hover { background: var(--accent-wash); text-decoration: none; }
+.fm-menu button.danger { color: var(--sig-red); }
+.fm-menu button.danger:hover { background: #fdf0ef; }
+.fm-menu .sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+/* 原来这里有 .copy-row / .copy-btn：上传结果卡里的「URL + 复制按钮」那一行。
+   卡片去掉之后页面上再没有产出点，跟着一起删。
+   图库里复制 URL 走右键菜单，不需要这组控件。 */
+
+details { margin-top: 22px; color: var(--text-secondary); font-size: 13px; }
+summary { cursor: pointer; color: var(--text-secondary); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 12.5px; }
+td, th { border: 1px solid var(--line); padding: 6px 9px; text-align: left; }
+th { color: var(--text-secondary); font-weight: 600; background: var(--bg-primary); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 24px;
+}
+.modal.on { display: flex; }
+.modal img { max-width: 100%; max-height: 100%; border-radius: var(--radius-media); }
+
+/* ---------- 登录页 ---------- */
+.login-wrap { max-width: 392px; margin: 12vh auto 0; }
+.login-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 34px 32px 30px;
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  margin-bottom: 22px;
+}
+.login-brand img {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 3px solid var(--text-primary);
+  object-fit: cover;
+}
+.login-headline {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  text-align: center;
+  margin: 0 0 6px;
+}
+.login-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 0 0 24px;
+}
+.login-card form { display: block; }
+.login-card .btn { width: 100%; margin-top: 14px; }
+
+/* ---------- 首次部署的初始口令 ----------
+   只出现在 PHP 渲染的登录页（index.php）上，不在静态的 index.html 上 ——
+   后者是站点正门，谁路过都能看见。 */
+.login-init {
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  background: var(--accent-wash);
+  border: 1px solid rgba(79, 70, 229, .28);
+  border-radius: var(--radius-field);
+}
+.login-init-t {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--accent-hover);
+}
+.login-init-t b { display: block; margin-top: 3px; }
+.login-init .copy-row { display: flex; gap: 6px; align-items: stretch; }
+.login-init-pw {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 生成口令时特意去掉了容易看错的 0/O/1/l/I，这里等宽显示正好用得上 */
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+.login-init .copy-btn {
+  flex-shrink: 0;
+  padding: 0 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--bg-secondary);
+  border: 1px solid rgba(79, 70, 229, .3);
+  border-radius: 8px;
+  transition: background-color .15s ease, color .15s ease;
+}
+.login-init .copy-btn:hover { background: var(--accent); color: #fff; }
+.login-init-n {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+.login-foot {
+  margin-top: 22px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (max-width: 720px) {
+  body { padding: 20px 14px 60px; }
+  .file { grid-template-columns: 1fr; }
+  h1 { font-size: 22px; }
+  .login-wrap { margin: 8vh auto 0; }
+}

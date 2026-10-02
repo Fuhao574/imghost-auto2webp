@@ -1,0 +1,159 @@
+# 图床
+
+这是给博客用的私人图床。传 PNG/JPEG 进去，出来 WebP，文件和目录按文章 slug 排好，粘进 frontmatter 就能用。
+
+四个文件，无依赖，无构建步骤。
+
+## 部署
+
+传这四个文件到 web 根目录，和 `images/` 同级：
+
+```
+index.php      主控台 + API
+lib.php        鉴权、转码、动图识别、备份
+index.html     静态登录页
+theme.css      样式
+```
+
+`images/` 和 `private/` 会自动建，只要 web 根目录可写。
+
+### 根路径
+
+登录页靠静态 `index.html` 抢在 `index.php` 前面被命中：
+
+```apache
+# Apache
+DirectoryIndex index.html index.php
+```
+
+```nginx
+# Nginx
+index index.html index.php;
+```
+
+**不要**用 `index.html → index.php` 跳转 —— 登录成功后会跳回登录页，死循环。
+
+主机自带停放页（默认 `index.html`）的话先删掉。
+
+### 改口令
+
+**部署完第一件事。** 首次访问会现生成一个随机口令（20 字符，代码里没有写死的默认值），显示在 `index.php` 这一页上：
+
+```
+https://你的域名/index.php
+```
+
+拿到之后用它进来，在右下角 **改口令** 换掉。改完之前图床 **只允许改口令这一个操作**，别的全拒 —— 那个口令在窗口期内是公开的（明文暂存在 `private/initial-password.txt`）。
+
+口令显示在 `index.php` 而不是根路径的静态登录页：后者是站点正门，谁路过都能看见，而 `/index.php` 得特意访问。静态页会提示你去哪儿取，但不显示口令本身。
+
+想重新生成一个：删掉 `private/secret.php`，下次访问会重来一遍。
+
+### 改域名
+
+`lib.php` 顶部：
+
+```php
+const PUBLIC_HOST = 'img.fuhao574.cyou';   // 拼图片 URL 用的
+const SITE_TITLE  = '图床 - Fuhao574';     // 标签页标题
+```
+
+`PUBLIC_HOST` 写死就行。**别改成 `$_SERVER['HTTP_HOST']`** —— 那等于把口令保护开放给任意 Host 头，伪造一个域名指过来就能绕过。
+
+## 注意事项
+
+### 需要 GD 支持 WebP
+
+硬要求，不满足直接 500 并提示。Debian/Ubuntu 上常常要另外装 `libwebp` 才带上。部署完先访问一次确认。
+
+AVIF 还要 PHP 8.3+ 且编译时带了 libavif，缺了会明确报错。
+
+### 图片参数
+
+都在 `lib.php` 顶部：
+
+| | 默认 | |
+|---|---|---|
+| `NORMAL_MAX_W` | 2560 | 正文图最大宽。超过就缩，不够不放大 |
+| `NORMAL_Q` | 82 | 正文图质量 |
+| `COVER_W` / `COVER_Q` | 1672 / 88 | 封面 |
+| `COVER_THUMB` | 320 | 封面缩略图 |
+| `ANIM_MAX_BYTES` | 5 MB | 动图上限 |
+| `MAX_FILES` | 12 | 一次最多传几张 |
+
+宽度定 2560 是因为 1920 屏 dpr=2（很常见）会把图放大 1.46 倍糊掉。质量 82 是拿真实正文图试出来的 —— q80 到 q92 并排看分不出来，而 q92 贵 30% 体积。文字糊是缩放造成的，先调宽度再调质量。
+
+### 动图不转码
+
+GIF、动图 WebP、APNG **原样保存**。
+
+GD 的解码器只取第一帧，动图走正常流程转出来的 WebP 是静图 —— 动画没了，而且你看不出来（图还在显示，只是不动）。所以动图在解码之前就分流，扩展名按内容判定：把 GIF 传成 `.png`，存出来还是 `.gif`。
+
+上限 5 MB。动图是唯一一类体积由你说了算的上传 —— 普通图出来最多几十 KB，动图原样落盘，3 MB 的 GIF 就是 3 MB，之后每次浏览都在花这个钱。
+
+如果动图是封面，仍会出一张静态的 `-320.webp`（从第一帧生成）。例外是动图 WebP，GD 读不了它，这时就不给缩略图，但主文件照样存好，不会整次失败。
+
+### 口令只留两条硬约束
+
+两次一致 + 不超过 72 字节（bcrypt 只取前 72 字节）。没有复杂度规则 —— 那类规则逼着人写自己都记不住的字符串，真正管用的是密码管理器。超 72 字节明确报错，因为 bcrypt 静默截断会让人以为设了个长口令、其实后半截没生效。
+
+登录失败会递增等待，10 次锁 15 分钟。锁定期间不跑 bcrypt（否则就成了靠响应时间试口令的 oracle）。
+
+### 备份
+
+工具栏 **打包下载** ，整个 `images/` 打成 zip 直接下。流式输出不落盘，`Content-Length` 准确，所以中途断了浏览器会立刻知道，不会给你一个静默截断的包。
+
+不压缩 —— WebP/JPEG/PNG 本身就是压缩格式，再压一遍 CPU 花掉了、体积几乎不动。
+
+包里带 `_backup-manifest.txt` 和 `_backup-manifest.json`（含每个文件的 crc32，可以对账）。恢复就是把 `images/` 解压回网站根目录，URL 结构不用改。包里**不含** `private/` 和图床程序本身。
+
+任何主机都可能突然消失，建议定期下一份。
+
+### 已知限制
+
+- 动图 AVIF 认不出来，会被当静态图处理、丢掉动画
+- 备份包超过 4 GB 或 65535 个文件直接报错，不写坏包（没实现 ZIP64）
+
+## 脚本化上传
+
+`files[]` 的 `[]` 不能少，少了会报 **PHP 没收到文件字段** 。
+
+```bash
+curl -b cookies.txt \
+     -F "csrf=$CSRF" \
+     -F "files[]=@shot.png" \
+     -F "folders[]=my-post" \
+     -F "names[]=my-post-cover" \
+     -F "mode=cover" \
+     "https://你的域名/index.php?do=api:upload"
+```
+
+`folders[]` 是目标文件夹，`names[]` 是文件名（不含扩展名），`mode` 是 `normal` 或 `cover`，`q` 和 `maxW` 不传就用常量。
+
+响应里每张图带 `frontmatter` 字段，就是能直接粘进博客的那一行。
+
+同名不同内容自动升 `-v2` `-v3`，不会静默覆盖；同内容则复用旧文件（`identical: true`）。
+
+完整接口在 `index.php` 顶部的路由表注释里。
+
+## 开发
+
+```sh
+php -S 127.0.0.1:8080 -t .
+```
+
+内置服务器优先 `index.php`，想看静态登录页要显式访问 `/index.html`。
+
+改了 `theme.css` 要同步 `index.html` 里的版本号 `theme.css?v=`，否则浏览器拿着旧样式（症状是 **传了新文件但页面没变** ）。`index.php` 那边从 `filemtime()` 自动算，只有静态页要手填。
+
+测试在仓库外的 `imgtest/`：
+
+```sh
+node imgtest/run-all.mjs
+```
+
+13 组，每组独立目录和端口。素材由 `gen-anim.php` / `gen-avif.php` / `gen-anim-big.php` 生成。
+
+## License
+
+[MIT](LICENSE)
