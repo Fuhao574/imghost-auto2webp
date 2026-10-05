@@ -113,6 +113,34 @@ const SECRET_FILE = SECRET_DIR . '/secret.php';
 const INIT_PW_FILE = SECRET_DIR . '/initial-password.txt';
 
 /**
+ * 墓碑文件：记下「曾经发布过、后来被删掉或改名让出」的每个**完整文件名**和它的内容指纹。
+ *
+ * 为什么非有不可 —— 版本号机制（-v2 / -v3）**只在文件还在的时候生效**。
+ * resolveVersion() 一看「这个名字空着」就直接拿去用。可名字被回收过一次之后：
+ *
+ *     传 A   →  x-cover.webp        ← 这个 URL 已经被浏览器 / CDN 缓存了
+ *     删掉   →  磁盘上没了，但地址还留在别人缓存里
+ *     传 B   →  又叫 x-cover.webp   ← URL 没变，内容换了
+ *
+ * 于是「删了重传」看到的还是旧图，**图库和博客页面一起中招**（同一个 <img src>）。
+ * 墓碑把用过的文件名**烧掉**：再占用同一个名字、内容又不同，就必须升版本号。
+ *
+ * 存 sha 是为了保住「同一张图重传不换 URL」这条性质 —— 只记「烧过」的话，
+ * 删掉再传同一张图会平白多出一个 -v2，CDN 缓存全白打散。
+ *
+ * 按**完整文件名**存（而不是「目录 + 名字 + 版本号」三段拆开记）：文件名本身
+ * 可能合法地以 -v2 结尾（有人传 `my-v2.png`），拆开记就会把它误认成
+ * `my` 的第 2 版，键对不上，墓碑等于白记。
+ *
+ * 放 private/ 而不是 images/：images/ 是对外可访问的目录，这份数据没理由公开。
+ */
+const TOMBSTONE_FILE = SECRET_DIR . '/tombstones.json';
+
+/** 最多记多少个文件名。超了丢最旧的（PHP 的关联数组保持插入序）。
+ *  这个数只是防跑偏，不是配额 —— 正常一个博客几百张图，离上限远得很。 */
+const TOMBSTONE_MAX_NAMES = 400;
+
+/**
  * 站名与头像，跟主站对齐 —— 登录页要复刻 LoginCard 的「头像 + 标题」版式。
  * 头像用主站同一个 GitHub 头像 URL，不额外传文件。
  */
@@ -1563,31 +1591,161 @@ function dimOf(string $path): array
 }
 
 /**
- * 找一个未被占用的版本号。
- * 内容一致则复用旧文件（不动 mtime，避免白打散 Cloudflare 缓存）；
+ * 墓碑的键：`目录/文件名`，统一正斜杠
+ * （Windows 上 str_replace 换掉反斜杠，否则同一个文件夹会开出两套键）。
+ *
+ * $dirAbs 一定在 IMAGES 之下（ensureFolder / resolveFolder 都走 safeJoinRoot），
+ * 所以正常情况就是砍掉 IMAGES 前缀。这里仍然**显式校验**一遍：
+ * 万一哪天传进来一个不在 images/ 下的路径，硬切 substr 会切出 `mages/foo/bar.png`
+ * 这种垃圾键 —— 键错一位不会报错，只会让墓碑悄悄失效，正是这个函数要防的那类事。
+ */
+function tombstoneKey(string $dirAbs, string $filename): string
+{
+    $dirAbs = normPath($dirAbs);
+    $base   = normPath(IMAGES);
+
+    if ($dirAbs === $base) {
+        $rel = '';
+    } elseif (str_starts_with($dirAbs . '/', $base . '/')) {
+        $rel = substr($dirAbs, strlen($base) + 1);
+    } else {
+        // 不在 images/ 下：拿绝对路径的哈希当命名空间。宁可键难看，
+        // 也不能和某个真实目录的键撞上 —— 撞上等于给另一个文件夹点了火。
+        $rel = '@' . substr(hash('sha256', $dirAbs), 0, 12);
+    }
+    return ($rel === '' ? '' : $rel . '/') . $filename;
+}
+
+/**
+ * 读墓碑。文件坏了 / 被手改过 / 不存在，都当空的处理。
+ *
+ * 故意不报错：这份数据的唯一作用是「多给几个版本号」，一条坏记录的后果
+ * 只是「删掉重传可能又看到旧图」—— 而那正是它要修的问题本身。
+ * 因为一个坏 JSON 就拒绝上传，是拿自己修的病去给自己下药。
+ */
+function loadTombstones(): array
+{
+    $raw = @file_get_contents(TOMBSTONE_FILE);
+    if (!is_string($raw) || $raw === '') {
+        return [];
+    }
+    $j = json_decode($raw, true);
+    if (!is_array($j) || !isset($j['names']) || !is_array($j['names'])) {
+        return [];
+    }
+    $out = [];
+    foreach ($j['names'] as $k => $sha) {
+        if (is_string($k) && is_string($sha) && $sha !== '') {
+            $out[$k] = $sha;
+        }
+    }
+    return $out;
+}
+
+/** 原子写，和 saveSecret 同一个套路：先写临时文件再 rename */
+function saveTombstones(array $names): bool
+{
+    if (!ensurePrivateDir()) {
+        return false;
+    }
+    if (count($names) > TOMBSTONE_MAX_NAMES) {
+        $names = array_slice($names, -TOMBSTONE_MAX_NAMES, null, true);
+    }
+    $body = json_encode(
+        ['ver' => 1, 'names' => $names],
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
+    );
+    if (!is_string($body)) {
+        return false;
+    }
+    $tmp = TOMBSTONE_FILE . '.' . bin2hex(random_bytes(4)) . '.tmp';
+    if (@file_put_contents($tmp, $body) !== strlen($body)) {
+        @unlink($tmp);
+        return false;
+    }
+    if (!@rename($tmp, TOMBSTONE_FILE)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod(TOMBSTONE_FILE, 0600);
+    return true;
+}
+
+/**
+ * 烧掉一个文件名 —— 必须在 unlink / rename **之前**调用，
+ * 那之后文件就没了，指纹取不到。
+ *
+ * 传进来的是「马上要消失的那个文件」。改名的话要烧的是**旧名字**：
+ * 新名字那个文件还在，is_file 为真时会自然被占住，不用记。
+ */
+function burnFile(string $dirAbs, string $filename): bool
+{
+    $abs = $dirAbs . '/' . $filename;
+    if (!is_file($abs)) {
+        return false;
+    }
+    $sha = @hash_file('sha256', $abs);
+    if (!is_string($sha) || $sha === '') {
+        return false;
+    }
+    $names = loadTombstones();
+    $names[tombstoneKey($dirAbs, $filename)] = $sha;
+    return saveTombstones($names);
+}
+
+/**
+ * 找一个未被占用、而且**从未发布过**的版本号。
+ *
+ * 内容一致则复用旧文件（不动 mtime，避免白打散 CDN 缓存）；
  * 内容不同则升 -v2 / -v3。
+ *
+ * 磁盘上没有、但墓碑里烧过的那个版本号有两条出路：
+ *   - 指纹一样 → 说明是同一张图删了又传，还用同一个 URL，缓存依然有效
+ *   - 指纹不同 → 这个地址已经在外面被缓存过了，绝不能复用，跳到下一版
+ * 第二个分支就是「删掉重传还是旧图」的修法。
  *
  * $thumbExt 单独拎出来是因为动图：主文件保持原扩展名（不然动画没了），
  * 而缩略图必须是静态的 WebP —— 用主文件的扩展名会生成一张动图缩略图，
  * 列表页里就开始动了。
  *
- * 返回 [fullPath, thumbPath|null, suffix, reused]
+ * 返回 [fullPath, thumbPath|null, suffix, reused, skippedBurned]
+ *   reused        文件已在且内容相同，调用方不要写
+ *   skippedBurned 本次跳过了至少一个「发布过又删掉」的版本号，
+ *                 调用方据此提醒「博客里写死的旧 URL 该更新了」
  */
 function resolveVersion(string $dir, string $stem, string $ext, string $tmpFull, bool $wantThumb, ?string $thumbExt = null): array
 {
     $thumbExt ??= $ext;
+    $sha     = hash_file('sha256', $tmpFull);
+    $stones  = loadTombstones();
+    $skipped = false;
+
     for ($v = 1; $v <= 99; $v++) {
         $suffix = $v === 1 ? '' : '-v' . $v;
         $full   = $dir . '/' . $stem . $suffix . '.' . $ext;
         $thumb  = $wantThumb ? $dir . '/' . $stem . $suffix . '-320.' . $thumbExt : null;
-        if (!is_file($full)) {
-            return [$full, $thumb, $suffix, false];
+
+        if (is_file($full)) {
+            if (filesize($full) === filesize($tmpFull)
+                && hash_file('sha256', $full) === $sha) {
+                return [$full, $thumb, $suffix, true, $skipped];
+            }
+            continue;
         }
-        if (is_file($full)
-            && filesize($full) === filesize($tmpFull)
-            && hash_file('sha256', $full) === hash_file('sha256', $tmpFull)) {
-            return [$full, $thumb, $suffix, true];
+
+        // 磁盘上没有这个名字 —— 它被用过吗？
+        $burned = $stones[tombstoneKey($dir, $stem . $suffix . '.' . $ext)] ?? null;
+        if (is_string($burned) && $burned !== '') {
+            if ($burned === $sha) {
+                // 同一张图删了又传。URL 不变，CDN 里的那份还是对的，直接写回去。
+                // reused 仍然是 false —— 文件确实不在了，得真写。
+                return [$full, $thumb, $suffix, false, $skipped];
+            }
+            $skipped = true;
+            continue;
         }
+
+        return [$full, $thumb, $suffix, false, $skipped];
     }
     throw new RuntimeException('同名文件已存在超过 99 个版本，请换个名字');
 }

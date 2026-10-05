@@ -332,7 +332,7 @@ function saveAnimatedOriginal(
 
     try {
         // 缩略图永远是静态 WebP，哪怕主文件是 .gif
-        [$fullPath, $thumbPath, $suffix, $reused] = resolveVersion(
+        [$fullPath, $thumbPath, $suffix, $reused, $skippedBurned] = resolveVersion(
             $dir, $stem, $ext, $tmpFull, $wantThumb, 'webp'
         );
 
@@ -378,6 +378,11 @@ function saveAnimatedOriginal(
             'folder'    => $folder,
             'version'   => $suffix === '' ? '(首发)' : $suffix,
             'identical' => $reused,
+            'note'      => $skippedBurned
+                ? '这个名字之前发布过又删掉了，地址还留在浏览器和 CDN 缓存里，'
+                  . '所以自动换成了 ' . basename($fullPath) . '。'
+                  . '博客 frontmatter 里写死的旧地址要同步改成上面这个。'
+                : '',
             'animated'  => true,
             'source'    => ['w' => $dim[0], 'h' => $dim[1], 'bytes' => $bytes],
             'file'      => [
@@ -518,7 +523,7 @@ function apiUpload(): never
                     throw new RuntimeException('imagewebp 写失败，多半是 memory_limit 到顶');
                 }
 
-                [$fullPath, $thumbPath, $suffix, $reused] = resolveVersion(
+                [$fullPath, $thumbPath, $suffix, $reused, $skippedBurned] = resolveVersion(
                     $dir,
                     $stem,
                     'webp',
@@ -560,6 +565,11 @@ function apiUpload(): never
                     'folder'    => $folder,
                     'version'   => $suffix === '' ? '(首发)' : $suffix,
                     'identical' => $reused,
+                    'note'      => $skippedBurned
+                        ? '这个名字之前发布过又删掉了，地址还留在浏览器和 CDN 缓存里，'
+                          . '所以自动换成了 ' . basename($fullPath) . '。'
+                          . '博客 frontmatter 里写死的旧地址要同步改成上面这个。'
+                        : '',
                     'source'    => ['w' => $srcW, 'h' => $srcH, 'bytes' => $srcBytes],
                     'file'      => [
                         'url'   => $url,
@@ -637,10 +647,33 @@ function apiDelete(): never
         jsonOut(['ok' => false, 'error' => '文件不存在或不在 images/ 内'], 404);
     }
 
+    // 先烧掉这个名字，再删。
+    //
+    // 不烧的话，这个文件名会被无条件回收给下一次上传用 —— 而它刚才还被
+    // 浏览器和 CDN 缓存着。「传错了→删掉→传新的」就会拿回同一个 URL，
+    // 于是你看到的还是那张传错的图。烧掉之后同名再传会自动升 -v2。
+    //
+    // 必须在 unlink 之前：文件没了就取不到内容指纹。
+    $alsoLeft = [];
+    if (burnFile(dirname((string) $abs), basename($rel))) {
+        // 顺手报一下残留的 -320 缩略图，但**不自动删**。
+        //
+        // 封面模式会额外生成 <名字>-320.webp，而删除只删用户点的那一个文件，
+        // 于是缩略图会留下来，在图库里显示成一张独立的图片。
+        // 不自动删是因为：万一有人真的传过一张就叫 xxx-320.webp 的图当正文图，
+        // 连带删掉就是误删用户数据。宁可不顺手做好事，也不能悄悄删别人的东西。
+        $d       = dirname($rel);
+        $d       = $d === '.' ? '' : $d;
+        $orphan  = dirname((string) $abs) . '/' . pathinfo($rel, PATHINFO_FILENAME) . '-320.webp';
+        if (is_file($orphan)) {
+            $alsoLeft[] = ($d === '' ? '' : $d . '/') . basename($orphan);
+        }
+    }
+
     if (!@unlink($abs)) {
         jsonOut(['ok' => false, 'error' => '删除失败：' . $rel], 500);
     }
-    jsonOut(['ok' => true, 'deleted' => $rel, 'groups' => scanImages()]);
+    jsonOut(['ok' => true, 'deleted' => $rel, 'orphans' => $alsoLeft, 'groups' => scanImages()]);
 }
 
 /**
@@ -657,6 +690,31 @@ function apiRename(): never
 
     if ($path === '') {
         jsonOut(['ok' => false, 'error' => '没说要改哪个'], 400);
+    }
+
+    // 旧名字马上要空出来，先烧掉，**再**改名。
+    //
+    // 顺序不能反：burnFile() 是现读文件算内容指纹的，改完名就找不到旧路径了。
+    //
+    // 文件和文件夹都要烧。文件夹改名会把它底下所有图片的地址一起换掉，
+    // 那些地址同样已经在缓存里了，不烧的话以后同名文件夹重开就会串。
+    if ($kind !== 'folder') {
+        $abs = safeJoin(dirname($path), basename($path));
+        if ($abs !== null && is_file($abs)) {
+            burnFile(dirname($abs), basename($abs));
+        }
+    } else {
+        $oldDir = safeJoinRoot($path);
+        if ($oldDir !== null && is_dir($oldDir)) {
+            foreach ((@scandir($oldDir) ?: []) as $f) {
+                if ($f === '.' || $f === '..' || str_starts_with($f, '.')) {
+                    continue;
+                }
+                if (in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), ALLOWED_EXT, true)) {
+                    burnFile($oldDir, $f);
+                }
+            }
+        }
     }
 
     try {
@@ -1895,7 +1953,8 @@ async function fmFileAction(k, path) {
     const j = await api('api:delete', { path: f.path });
     if (!j.ok) return alert(j.error);
     FM.sel.clear();
-    return fmLoad(j.groups);
+    fmLoad(j.groups);
+    fmNoteOrphans(j.orphans);
   }
 }
 
@@ -1985,16 +2044,31 @@ async function fmDelSel() {
   if (!paths.length) return;
   const names = paths.map(p => p.split('/').pop());
   if (!confirm('删除 ' + paths.length + ' 个文件？{$nl}' + names.join('{$nl}') + '{$nl}{$nl}删了就找不回来了。{$nl}（Cloudflare 可能还会继续发旧图一阵子）')) return;
-  let groups = null, bad = 0;
+  let groups = null, bad = 0, orphans = [];
   for (const p of paths) {
     const j = await api('api:delete', { path: p });
-    if (j.ok && j.groups) groups = j.groups;
+    if (j.ok && j.groups) { groups = j.groups; orphans = orphans.concat(j.orphans || []); }
     else { bad++; alert(p.split('/').pop() + '：' + (j.error || '删除失败')); }
   }
   FM.sel.clear();
   if (groups) fmLoad(groups);
   else fmRender();
   if (bad) alert('有 ' + bad + ' 个文件没删掉，见上面的提示。');
+  fmNoteOrphans(orphans);
+}
+
+/**
+ * 删掉封面后，封面模式生成的 <名字>-320.webp 会留下来 —— 删除只删用户点的那一个。
+ *
+ * 服务端不自动删它，因为无法区分「封面模式生成的缩略图」和「用户真传过一张
+ * 叫 xxx-320.webp 的正文图」，猜错就是误删用户数据。所以只提示，让用户自己点。
+ */
+function fmNoteOrphans(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  alert('这几张缩略图还留着（在图库里显示成独立的图片）：{$nl}{$nl}'
+    + list.map(p => '· ' + p).join('{$nl}')
+    + '{$nl}{$nl}它们是封面模式自动生成的 320px 缩略图。'
+    + '重新传一次封面会覆盖掉，也可以现在手动删。');
 }
 
 document.addEventListener('keydown', async (ev) => {
