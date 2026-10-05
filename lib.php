@@ -1250,23 +1250,37 @@ function scanImages(): array
         $groups[$dir]['bytes']  += $size;
         $groups[$dir]['count']  += 1;
         $groups[$dir]['mtime']   = max($groups[$dir]['mtime'], $mtime);
-
-        // 文件夹封面：<slug>-cover.<ext>
-        if ($dir !== '' && $item['name'] === $dir . '-cover.' . $ext) {
-            $groups[$dir]['cover'] = $item;
-        }
     }
 
-    // 兜底：万一封面用了别的扩展名或带了版本号，模糊找一次，
-    // 否则「有封面」标记会因为一个后缀差异而不显示
+    /**
+     * 文件夹封面：<slug>-cover.<ext>，或它的版本 <slug>-cover-v2.<ext>。
+     *
+     * 取**版本号最大的那个**，不是「无后缀的那个」。
+     *
+     * 原来这里是无后缀精确匹配，于是踩了个很难自查的坑：删掉重传之后，
+     * 正确的那张可能叫 x-cover-v2.webp，而传错那张 x-cover.webp 还躺在原地
+     * —— 按名字匹配会挑中**旧的**，症状就是「明明传对了，图库封面还是错的」。
+     *
+     * 原来的模糊兜底（str_startswith '<slug>-cover.'）也救不了：
+     * 'x-cover-v2.webp' 并不以 'x-cover.' 开头。
+     *
+     * 版本组只允许 -v + 数字，所以 x-cover-320.webp 那张缩略图混不进来
+     * （它的 -320 不是版本号）。
+     */
     foreach ($groups as $dir => &$g) {
-        if ($g['cover'] !== null || $g['slug'] === '') {
+        if ($dir === '') {
             continue;
         }
+        $re   = '/^' . preg_quote($g['slug'] . '-cover', '/') . '(?:-v(\d+))?\.[A-Za-z0-9]+$/';
+        $best = 0;
         foreach ($g['files'] as $f) {
-            if (str_starts_with($f['name'], $g['slug'] . '-cover.')) {
+            if (!preg_match($re, $f['name'], $m)) {
+                continue;
+            }
+            $v = (($m[1] ?? '') === '') ? 1 : (int) $m[1];
+            if ($v > $best) {
+                $best      = $v;
                 $g['cover'] = $f;
-                break;
             }
         }
     }
