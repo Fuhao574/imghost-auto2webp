@@ -177,6 +177,45 @@ const ALLOWED_EXT = ['webp', 'jpg', 'jpeg', 'png', 'gif', 'avif'];
  */
 const ANIM_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * 「原图」模式（mode=original）的体积上限。
+ *
+ * 比动图的 5 MB 宽，因为这个模式的用途恰恰是**不该被压**：
+ * 带小字的截图、界面图、图表 —— 有损 q82 在这些内容上会让文字发虚，
+ * 而 PNG 存一张 2560px 的截图轻易就 8 MB。卡在 5 MB 就等于把这个模式废掉。
+ *
+ * 12 MB 是「一张图不至于离谱」和「免费主机的磁盘配额」之间的线。
+ * 注意这条只管**上传**；真要防把主机塞满，靠的是备份和定期清理，不是这个数。
+ */
+const ORIGINAL_MAX_BYTES = 12 * 1024 * 1024;
+
+/**
+ * 按**内容**判定图片格式。
+ *
+ * 返回 [扩展名|null, mime]。扩展名为 null 表示「这份字节不是我能认的图片」。
+ *
+ * 按内容判不按文件名判：用户完全可能把 GIF 传成 x.png，或者干脆不带扩展名。
+ * 信文件名就会给 GIF 内容套上 .png 的壳，浏览器按 mime 渲染直接罢工。
+ *
+ * 收在一处是因为**两条路都在用它**（动图原样保存、原图模式）。上一次两条路
+ * 各写一份 match，就是靠「同名不同内容」那条规则才没漂开 —— 与其靠自觉，
+ * 不如让它物理上只有一份。
+ */
+function sniffImageExt(string $path): array
+{
+    $info = @getimagesize($path);
+    $mime = is_array($info) ? (string) ($info['mime'] ?? '') : '';
+    $ext  = match ($mime) {
+        'image/gif'  => 'gif',
+        'image/webp' => 'webp',
+        'image/png'  => 'png',   // APNG 的 MIME 也是 image/png
+        'image/avif' => 'avif',
+        'image/jpeg' => 'jpg',   // JPEG 不可能是动图，只有原图模式会走到
+        default      => null,
+    };
+    return [$ext, $mime];
+}
+
 function boot(): void
 {
     @ini_set('memory_limit', '256M');

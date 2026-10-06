@@ -276,38 +276,30 @@ function saveAnimatedOriginal(
     string $folder,
     string $stem,
     bool $wantThumb,
-    float $t0
+    float $t0,
+    int $maxBytes = 0
 ): array {
+    $maxBytes = $maxBytes > 0 ? $maxBytes : ANIM_MAX_BYTES;
     $bytes = (int) filesize($tmpIn);
-    if ($bytes > ANIM_MAX_BYTES) {
+    if ($bytes > $maxBytes) {
         return [
             'ok'     => false,
             'folder' => $folder,
             'name'   => $origName,
-            'error'  => '动图 ' . fmtBytes($bytes) . '，超过 ' . fmtBytes(ANIM_MAX_BYTES)
+            'error'  => '动图 ' . fmtBytes($bytes) . '，超过 ' . fmtBytes($maxBytes)
                      . ' 的上限。动图不压缩、原样保存，所以图床占多大就是它自己多大。'
                      . '想压小就在本地先转一遍，或者截几帧。',
         ];
     }
 
-    // 存成什么扩展名，**按内容判，不按文件名判**。
-    //
-    // 原文件名只是个线索：用户完全可能把 GIF 传成 x.png（或者干脆
-    // 不带扩展名），这时候信文件名就会给一个 GIF 内容套上 .png 的壳。
-    // 转码那条路本来就是靠 getimagesize 认类型的，动图这条路跟着一致，
-    // 两边对同一个文件的判断不会打架。
+    // 存成什么扩展名，**按内容判，不按文件名判**。理由见 lib.php 的 sniffImageExt()。
     //
     // 认不出 mime 才退回文件名，且仍然要过 ALLOWED_EXT ——
     // 前端只按 MIME 过滤，脚本化上传（curl）什么都能塞进来。
-    $info = @getimagesize($tmpIn);
-    $mime = is_array($info) ? (string) ($info['mime'] ?? '') : '';
-    $ext  = match ($mime) {
-        'image/gif'  => 'gif',
-        'image/webp' => 'webp',
-        'image/png'  => 'png',   // APNG 的 MIME 也是 image/png
-        'image/avif' => 'avif',
-        default      => strtolower(pathinfo($origName, PATHINFO_EXTENSION)),
-    };
+    [$ext, $mime] = sniffImageExt($tmpIn);
+    if ($ext === null) {
+        $ext = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
+    }
     if (!in_array($ext, ALLOWED_EXT, true)) {
         return [
             'ok'     => false,
@@ -417,9 +409,121 @@ function saveAnimatedOriginal(
     }
 }
 
+/**
+ * 原图模式：静态图也原样落盘，不转码、不缩放。
+ *
+ * 存在的理由不是「省事」，是**有损压缩在这种内容上是错的**：
+ * 带小字的截图、界面图、图表、示意图，q82 会让文字发虚。而这类图恰恰
+ * 从 PNG 转 WebP 省不下多少（PNG 本身已经是压缩格式），压了只亏清晰度。
+ *
+ * 与动图那条路的差别只有两处，都是刻意的：
+ *   1. **必须认出 mime，不许拿文件名兜底。** 动图那条路在 2025-12 之前
+ *      传的存量文件有些本来就没扩展名，兜底是为了不把老用户的图挡在门外；
+ *      这里存的是全新上传、且这次开始服务器会长期持有这些字节 —— 那就
+ *      宁可拒，也别在一个对外可访问的目录里放进来源不明的字节。
+ *   2. **上限 12 MB**（动图是 5 MB），见 ORIGINAL_MAX_BYTES 的注释。
+ *
+ * 不出缩略图。缩略图要解码，而这个模式的全部意义就是不碰这些像素。
+ */
+function saveOriginal(
+    string $tmpIn,
+    string $origName,
+    string $dir,
+    string $folder,
+    string $stem,
+    float $t0
+): array {
+    $bytes = (int) filesize($tmpIn);
+    if ($bytes > ORIGINAL_MAX_BYTES) {
+        return [
+            'ok'     => false,
+            'folder' => $folder,
+            'name'   => $origName,
+            'error'  => '原图 ' . fmtBytes($bytes) . '，超过 ' . fmtBytes(ORIGINAL_MAX_BYTES)
+                     . ' 的上限。原图模式不压缩，磁盘上就占这么多。'
+                     . '可以先在本地裁一下或转成更省的格式。',
+        ];
+    }
+
+    [$ext, $mime] = sniffImageExt($tmpIn);
+    if ($ext === null || !in_array($ext, ALLOWED_EXT, true)) {
+        return [
+            'ok'     => false,
+            'folder' => $folder,
+            'name'   => $origName,
+            'error'  => $mime === ''
+                ? '认不出这是不是图片（读不到图像头）。确认文件没传坏。'
+                : '原图模式只存这些格式：' . implode('、', ALLOWED_EXT)
+                  . '（这个文件识别出来是 ' . $mime . '）',
+        ];
+    }
+
+    $dim = dimOf($tmpIn);
+    if ($dim[0] === 0) {
+        return ['ok' => false, 'folder' => $folder, 'name' => $origName,
+                'error' => '读不出尺寸，文件可能损坏'];
+    }
+
+    $tmpFull = $dir . '/.tmp-' . bin2hex(random_bytes(6)) . '.' . $ext;
+    if (!@copy($tmpIn, $tmpFull)) {
+        return ['ok' => false, 'folder' => $folder, 'name' => $origName,
+                'error' => '临时文件写不出来，检查目录权限和磁盘空间'];
+    }
+
+    try {
+        // 出不出缩略图传 false；想缩的话把 'webp' 作为 $thumbExt 传进去即可。
+        [$fullPath, , $suffix, $reused, $skippedBurned] = resolveVersion(
+            $dir, $stem, $ext, $tmpFull, false
+        );
+
+        if ($reused) {
+            $dim = dimOf($fullPath);
+        } elseif (!@rename($tmpFull, $fullPath)) {
+            return ['ok' => false, 'folder' => $folder, 'name' => $origName,
+                    'error' => '落盘失败：' . basename($fullPath)];
+        } else {
+            $tmpFull = null;
+        }
+
+        $rel = $folder . '/' . basename($fullPath);
+        $url = imgUrl($rel);
+
+        return [
+            'ok'        => true,
+            'mode'      => 'original',
+            'folder'    => $folder,
+            'version'   => $suffix === '' ? '(首发)' : $suffix,
+            'identical' => $reused,
+            'note'      => $skippedBurned
+                ? '这个名字之前发布过又删掉了，地址还留在浏览器和 CDN 缓存里，'
+                  . '所以自动换成了 ' . basename($fullPath) . '。'
+                  . '博客 frontmatter 里写死的旧地址要同步改成上面这个。'
+                : '',
+            'source'    => ['w' => $dim[0], 'h' => $dim[1], 'bytes' => $bytes],
+            'file'      => [
+                'url'   => $url,
+                'path'  => $rel,
+                'name'  => basename($fullPath),
+                'w'     => $dim[0], 'h' => $dim[1],
+                'bytes' => (int) filesize($fullPath),
+            ],
+            'frontmatter' => 'image: ' . $url,
+            'ms'        => (int) round((microtime(true) - $t0) * 1000),
+        ];
+    } finally {
+        if ($tmpFull !== null && is_file($tmpFull)) {
+            @unlink($tmpFull);
+        }
+    }
+}
+
 function apiUpload(): never
 {
-    $mode    = (($_POST['mode'] ?? 'normal') === 'cover') ? 'cover' : 'normal';
+    // 三个值。用 in_array 白名单而不是三元链：mode 是外部输入，
+    // 写成 if/elseif 链以后每加一个模式都要记得改两处，漏一处就是
+    // 「前端选了但后端当普通图处理」这种静默降级。
+    $modeIn = (string) ($_POST['mode'] ?? 'normal');
+    $mode   = in_array($modeIn, ['normal', 'cover', 'original'], true) ? $modeIn : 'normal';
     // 界面上没有「最大宽」输入框了，走常量。仍然接受 POST 里的 maxW，
     // 这样脚本化上传（curl / 自己的脚本）还能指定宽度。
     $maxW    = max(64, min(6000, (int) ($_POST['maxW'] ?? NORMAL_MAX_W)));
@@ -492,9 +596,20 @@ function apiUpload(): never
             // 动图在解码之前就得分流。放在后面判就晚了：GD 已经把第一帧
             // 读出来，动画没了，那时候再说什么都补不回来。
             if (isAnimated($tmpIn)) {
+                // 原图模式给 12 MB（见 ORIGINAL_MAX_BYTES），其余模式仍是动图的 5 MB。
+                // 原图模式下动图也是原样落盘，所以统一走这里而不是再开一个分支。
                 $results[] = saveAnimatedOriginal(
-                    $tmpIn, $origName, $dir, $folder, $stem, $mode === 'cover', $t0
+                    $tmpIn, $origName, $dir, $folder, $stem,
+                    $mode === 'cover', $t0,
+                    $mode === 'original' ? ORIGINAL_MAX_BYTES : 0
                 );
+                continue;
+            }
+
+            // 原图模式：不进 GD，直接按原字节落盘。必须排在上面之后 ——
+            // 动图那条路要处理缩略图，而这里刻意什么都不生成。
+            if ($mode === 'original') {
+                $results[] = saveOriginal($tmpIn, $origName, $dir, $folder, $stem, $t0);
                 continue;
             }
 
@@ -1035,6 +1150,7 @@ function renderDashboard(): void
         <select id="mode">
           <option value="normal">普通图片 — 单个 WebP</option>
           <option value="cover">封面 — 双尺寸（1672 + 320），文件名锁定为 &lt;文件夹&gt;-cover</option>
+          <option value="original">原图 — 不转码不缩放，原样保存</option>
         </select>
       </div>
       <div id="normalBox" class="mode-field mode-q">
@@ -1235,6 +1351,13 @@ function scriptBlock(string $csrf, array $groups): string
     // 整段 script 直接 SyntaxError —— 而 php -l 和 node --check 都发现不了。
     $normalW = (string) NORMAL_MAX_W;
     $normalQ = (string) NORMAL_Q;
+    // 提示里要显示的原图上限。同样在服务端算好 —— 手写「12 MB」的话，
+    // 改了 ORIGINAL_MAX_BYTES 而忘了改这里，界面就一直报错的数。
+    //
+    // 注意上面那条注释：这段 heredoc 里**只能**用 {$var} 插值。
+    // 在 JS 里写 PHP 的短回显标签不会报错，只会让整段 script 变成 SyntaxError，
+    // 而 php -l 报的还是「Unclosed」这种指向别处的错，几乎没法查。
+    $originalMax = htmlspecialchars(fmtBytes(ORIGINAL_MAX_BYTES), ENT_QUOTES);
 
     /**
      * 注意：这段 JS 放在 heredoc 里，而 heredoc 的转义规则跟双引号字符串一样，
@@ -1287,18 +1410,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // 只用来显示一句话，让提示里的数字跟 lib.php 的常量一致，不会写歪
 const NORMAL_MAX_W_JS = {$normalW};
 const NORMAL_Q_JS = {$normalQ};
+const ORIGINAL_MAX_JS = '{$originalMax}';
 
 function hint(){
-  const cover = modeEl.value === 'cover';
-  // 封面模式用不上质量，整个字段（含它占的 92px）一起收掉
-  normalBox.hidden = cover;
+  const mode = modeEl.value;
+  const cover = mode === 'cover';
+  // 这段 JS 在 PHP 的 heredoc 里，heredoc 只认花括号插值，所以凡是想
+  // 在这里输出 PHP 的写法都不成立 —— 短回显标签会原样进 JS，整段 script
+  // 变成 SyntaxError，而 php -l 报的是「Unclosed '{'」这种指向别处的错。
+  // 上限那个数字在 scriptBlock 开头用 $originalMax 算好了，这里只管拼字符串。
+  // 封面和原图都用不上质量，整个字段（含它占的 92px）一起收掉
+  normalBox.hidden = cover || mode === 'original';
   // 说明压到一行。以前是两行长句，现在空间紧了，而且「82 够用」这种结论
   // 写一次就够 —— 推导过程在 lib.php 的 NORMAL_Q 注释里。
   document.getElementById('modeHint').innerHTML = cover
     ? '文件名锁定为 <code>&lt;文件夹&gt;-cover.webp</code>，另出一张 <code>-320</code> 缩略图（1672 q88 + 320 q80）。frontmatter 里 <code>image:</code> 引的就是它。'
+    : mode === 'original'
+    ? '原样保存，不转码也不缩放 —— 带小字的截图、界面图、图表用这个，有损压缩会让文字发虚。上限 <code>' + ORIGINAL_MAX_JS + '</code>，出了缩略图。'
     : '只出一张 WebP，宽度固定 <code>' + NORMAL_MAX_W_JS + 'px</code>（超过就缩，不足不放大）。质量 ' + NORMAL_Q_JS + ' 就够，再调高只涨体积。';
-  if (cover) { picked.forEach(p => p.lock = true); }
-  else { picked.forEach(p => p.lock = false); }
+  // 只有封面锁文件名。原图模式虽然也原样存，但文件名仍可改 ——
+  // 它服务的是正文插图，那儿的文件名本来就该跟语义走。
+  picked.forEach(p => p.lock = cover);
   render();
 }
 modeEl.addEventListener('change', hint);
@@ -1626,6 +1758,10 @@ function resultSummary(rs, t0) {
   }
   const cover = ok.filter(r => r.mode === 'cover').length;
   if (cover) s += '  ·  ' + cover + ' 张封面（另出 -320 缩略图）';
+  // 原图模式下「省 0%」是**预期结果**，不是转码失败 —— 上面那句「省 x%」
+  // 会显示成「省 0%」，不解释的话看着像 bug（和动图那条一个道理）
+  const orig = ok.filter(r => r.mode === 'original' && !r.animated).length;
+  if (orig) s += '  ·  ' + orig + ' 张按原样保存（没转码，本来就是压好的）';
   const anim = ok.filter(r => r.animated).length;
   // 动图原样保存，一个字节都没压 —— 不说清楚的话，「省 0%」看着像 bug
   if (anim) s += '  ·  ' + anim + ' 张动图原样保存（没转码，压了就没动画了）';
