@@ -167,86 +167,6 @@ const SITE_PRODUCT  = 'Fuhao574的图床';
 const ALLOWED_EXT = ['webp', 'jpg', 'jpeg', 'png', 'gif', 'avif'];
 
 /**
- * images/.htaccess 的内容。
- *
- * **这个目录必须对外可读** —— imgUrl() 拼出来的每个地址都是
- * https://.../images/...，全部图片都靠它发出去。所以这里**不能**写
- * `Require all denied`：那样每一张图都会 403，图床直接不可用。
- * private/ 能那么写，是因为那儿没有任何字节需要被浏览器读到；
- * images/ 恰好相反。**别把两者的策略抄串。**
- *
- * 这里真正挡的是另一件事：万一 images/ 里出现了一个可执行文件，
- * 别让 Apache 把它当脚本跑。原图模式上线之后，这个目录开始持有
- * 服务器自己没生成过的字节（用户传的原始文件），内容不再完全可控。
- *
- * 全用 ASCII：这份文件一旦解析失败，Apache 可能整站 500 —— 而图片
- * 全在这里，整站就跟着挂了。宁可少写几条，不能写错。
- */
-const IMAGES_HTACCESS = <<<'HT'
-# images/ -- serve as static files, never execute.
-#
-# This directory MUST stay readable over HTTP: imgUrl() builds every
-# image URL as https://.../images/... , so all pictures are served here.
-# Do NOT add "Require all denied" -- that would 403 every image and take
-# the whole image host down. (private/ may carry that rule because
-# nothing in it ever needs to be read by a browser. images/ is the
-# exact opposite. Do not copy one policy onto the other.)
-#
-# What this blocks instead: if an executable file ever shows up here,
-# Apache must not run it. Since "original upload" mode landed, this
-# directory holds bytes the server did not produce itself.
-#
-# Three layers, cheap first:
-#   1. Serve only image MIME types; anything else becomes plain text.
-#   2. Strip execution handlers for common script extensions.
-#   3. Drop the execute bit, which also covers CGI / FastCGI.
-
-# ---- 1. MIME whitelist ----
-# AddType per type rather than "AddType everything then negate": the
-# latter depends on later rules overriding earlier ones, which is not
-# identical across Apache versions. A whitelist needs only one rule.
-<IfModule mod_mime.c>
-    AddType image/webp              .webp
-    AddType image/jpeg              .jpg .jpeg
-    AddType image/png               .png
-    AddType image/gif               .gif
-    AddType image/avif              .avif
-    AddType application/octet-stream .bin
-</IfModule>
-
-# ---- 2. Strip execution handlers ----
-# Covers mod_php, CGI and FastCGI style deployments. php-fpm is wired
-# through ProxyPassMatch in the vhost and cannot be reliably disabled
-# from .htaccess, but RemoveHandler plus the Options below still stop
-# CGI and mod_php.
-<IfModule mod_mime.c>
-    RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
-    RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .phar
-</IfModule>
-
-RemoveHandler .cgi .pl .py .rb .sh .lua
-RemoveType .cgi .pl .py .rb .sh .lua
-
-# Fallback: even if RemoveHandler silently failed because AllowOverride
-# is too restrictive, at least stop these from reaching the CGI parser.
-<IfModule mod_cgi.c>
-    Options -ExecCGI -Indexes
-</IfModule>
-
-# ---- 3. No directory listings ----
-Options -Indexes
-
-# ---- 4. Restrict to read-only verbs ----
-# AllowOverride may be None (this file is skipped entirely) or All (it
-# applies and can override the parent). Restricting Limits explicitly
-# means that if AllowOverride is ever loosened, this file does not
-# silently become a general-purpose entry point.
-<LimitExcept GET HEAD OPTIONS>
-    Require all denied
-</LimitExcept>
-HT;
-
-/**
  * 动图原样保存时的体积上限。
  *
  * 动图是唯一一类「不能转码」的上传 —— 别的都能压小，动图压了就丢帧。
@@ -962,40 +882,6 @@ function ensurePrivateDir(): bool
 }
 
 /**
- * 确保 images/.htaccess 在位 —— 只挡执行，不挡读取。
- *
- * 挂在 ensureFolder() 上而不是 boot()：images/ 目录本身是被懒创建的
- * （第一次往新文件夹传东西时才建），所以 boot() 那会儿它常常还不存在。
- *
- * **绝不能在这里返回 false 来阻断上传。** 这份文件是纵深防御：
- * 就算它写不进去（AllowOverride 关了、目录只读、主机压根不是 Apache），
- * 图床该能用还是能用 —— 因为 ALLOWED_EXT + 内容判定已经挡住了可执行后缀，
- * 这只是第二道。拿它当上传的前置条件，等于让纵深防御反过来变成单点故障。
- */
-function ensureImagesHtaccess(): bool
-{
-    $path = IMAGES . '/.htaccess';
-
-    // 已存在且内容一致就不动它。手改过的不覆盖 —— 尊重主机管理员的调整。
-    if (is_file($path)) {
-        return true;
-    }
-    // 用临时文件 + rename，跟 saveSecret 同一个理由：
-    // 直接 file_put_contents 中途断掉会留下半截 .htaccess，Apache 读到就 500，
-    // 而图片全在这个目录下 —— 整站就挂了。
-    $tmp = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
-    if (@file_put_contents($tmp, IMAGES_HTACCESS) !== strlen(IMAGES_HTACCESS)) {
-        @unlink($tmp);
-        return false;
-    }
-    if (!@rename($tmp, $path)) {
-        @unlink($tmp);
-        return false;
-    }
-    return true;
-}
-
-/**
  * 原子写 secret.php：先写临时文件再 rename。
  * 中途断电或并发写入只会留下一个临时文件，不会把 secret.php 写成半截。
  *
@@ -1166,16 +1052,9 @@ function ensureFolder(string $folder): ?string
         return null;
     }
     if (is_dir($dir)) {
-        // 目录已存在不代表 .htaccess 写过 —— images/ 可能是更早的版本建的，
-        // 或者管理员手动删过。每次进来都确认一下，代价是一次 is_file。
-        ensureImagesHtaccess();
         return $dir;
     }
-    if (@mkdir($dir, 0755, true) || is_dir($dir)) {
-        ensureImagesHtaccess();
-        return $dir;
-    }
-    return null;
+    return @mkdir($dir, 0755, true) || is_dir($dir) ? $dir : null;
 }
 
 /**
